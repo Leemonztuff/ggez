@@ -11,6 +11,8 @@ import {
   Clock,
   Color,
   DirectionalLight,
+  Fog,
+  HemisphereLight,
   Mesh,
   MeshStandardMaterial,
   OrthographicCamera,
@@ -29,6 +31,7 @@ import type { ActorTarget } from "./types";
 import { createSouldollsSystems } from "./gameplay/systems";
 import {
   createSouldollsRuntimeScene,
+  SANCTUARIES,
   SOULDOLLS_ENTITY_IDS,
   WILD_CREATURES,
   type WildDefinition
@@ -44,18 +47,24 @@ import {
   creatureName,
   createCreature,
   evolveCreature,
+  gainEVs,
   gainXp,
   type Creature
 } from "./pokemon/creature";
 import {
   addToParty,
   createEmptyParty,
-  healParty,
+  evReward,
+  healPartyFully,
   partyLeader,
   xpReward,
   type Party
 } from "./pokemon/roster";
 import { getSpecies } from "./pokemon/species";
+import { WorldClock, WeatherCycle } from "./world/clock";
+import { encounterChancePerSecond, rollEncounter } from "./world/encounters";
+import { lightingFor, type Lighting } from "./world/lighting";
+import { zoneAt, type Zone } from "./world/zones";
 
 const WALK_SPEED = 4.4;
 const PLAYER_RADIUS = 0.4;
@@ -63,9 +72,7 @@ const PLAYER_HEIGHT = 1.8;
 const PLAYER_BASE_Y = 0.72;
 const WORLD_LIMIT_X = 15.5;
 const WORLD_LIMIT_Z = 16.5;
-const WILD_SPEED = 1.15;
-const WILD_RADIUS = 3.6;
-const CONTACT_DISTANCE = 1.15;
+const MAX_BONDS = 12;
 
 type CharacterBinding = {
   base: { x: number; y: number; z: number };
@@ -74,31 +81,27 @@ type CharacterBinding = {
   sprite: Sprite;
 };
 
-type WildState = {
-  definition: WildDefinition;
-  lastWritten: { x: number; z: number };
-  target: { x: number; z: number };
-  timer: number;
-  visual: { x: number; z: number };
-};
-
 type ActiveBattle = {
   activeIndex: number;
-  status: BattleState;
+  entityId?: string;
   rival: Creature;
-  wild: WildState;
+  state: BattleState;
 };
 
 export async function createSouldollsGame(root: HTMLElement) {
   const saved = loadGame();
   const party: Party = saved
-    ? { creatures: saved.party, vinculos: saved.vinculos }
+    ? { bag: { items: { ...saved.bag } }, creatures: saved.party, vinculos: saved.vinculos }
     : createEmptyParty();
 
   const bindings = new Map<string, CharacterBinding>();
   const nearbyTargets = new Set<string>();
-  const wilds = new Map<string, WildState>();
+  const worldClock = new WorldClock();
+  const weather = new WeatherCycle();
   let battle: ActiveBattle | undefined;
+  let encounterAccumulator = 0;
+  let currentZone: Zone = zoneAt(saved?.position.x ?? 0, saved?.position.z ?? 13.2);
+  let lightingKey = "";
 
   const ui = new GameUI(root, {
     interact: () => interact(),
@@ -168,7 +171,7 @@ export async function createSouldollsGame(root: HTMLElement) {
     z: saved?.position.z ?? initialTransform?.position.z ?? 13.2
   };
 
-  createCharacters(scene, bindings, wilds);
+  createCharacters(scene, bindings);
   const playerMarker = createPlayerMarker(scene);
 
   runtime.onEvent((event) => {
@@ -201,9 +204,17 @@ export async function createSouldollsGame(root: HTMLElement) {
         return;
       }
 
+      if (target.type === "santuario") {
+        restAtSanctuary(target.name);
+        return;
+      }
+
       const wild = wilds.get(targetId);
       if (wild) {
-        startBattle(wild);
+        startBattle({
+          creature: createCreature(wild.definition.speciesId, wild.definition.level),
+          entityId: targetId
+        });
       }
     }
   });
@@ -212,6 +223,9 @@ export async function createSouldollsGame(root: HTMLElement) {
 
   const sun = resolveSun(instance);
   const sunAnchor = instance.nodesById.get("node:souldolls:light:directional");
+  const hemisphere = instance.lights.find(
+    (light) => (light as HemisphereLight).isHemisphereLight
+  ) as HemisphereLight | undefined;
   configureSunShadow(sun);
 
   const input = createGameInput(root, {
@@ -285,7 +299,21 @@ export async function createSouldollsGame(root: HTMLElement) {
     ui.showToast("Brizna se une a tu colección");
   }
 
-  function startBattle(wild: WildState) {
+  function restAtSanctuary(name: string) {
+    healPartyFully(party);
+
+    if (party.vinculos < MAX_BONDS) {
+      party.vinculos += 1;
+    }
+
+    persistGame();
+    ui.showDialogue(
+      name,
+      "Las piedras tibias descansan a tu colección y una chispa de bruma vuelve a tu morral."
+    );
+  }
+
+  function startBattle(input: { creature: Creature; entityId?: string }) {
     if (battle) return;
 
     const leader = partyLeader(party);
@@ -295,44 +323,49 @@ export async function createSouldollsGame(root: HTMLElement) {
       return;
     }
 
-    const species = getSpecies(wild.definition.speciesId);
-    const rival = createCreature(wild.definition.speciesId, wild.definition.level);
-    const status = iniciarBatalla(
+    const state = iniciarBatalla(
       {
+        bondBonus: 0,
         creature: { ...leader },
+        flinched: false,
         isPlayer: true,
         moves: [...leader.moves],
         vinculos: party.vinculos
       },
       {
-        creature: rival,
+        bondBonus: 0,
+        creature: input.creature,
+        flinched: false,
         isPlayer: false,
-        moves: [...rival.moves],
+        moves: [...input.creature.moves],
         vinculos: 0
-      }
+      },
+      party.bag
     );
 
-    battle = { activeIndex: 0, status, rival, wild };
+    state.modificadores = weatherModifiers(weather.weather);
+
+    battle = { activeIndex: 0, entityId: input.entityId, rival: input.creature, state };
     battleUi.clearLog();
     battleUi.open();
-    battleUi.render(status, party, 0);
+    battleUi.render(battle.state, party, 0);
     battleUi.appendLog({
       kind: "info",
-      text: `¡${species.name} salvaje aparece! Usa Vínculo para intentar unificarlo.`
+      text: `¡${creatureName(input.creature)} salvaje aparece en ${currentZone.name}!`
     });
   }
 
   function submitBattleAction(action: BattleUiAction) {
-    if (!battle || battle.status.fase === "fin") return;
+    if (!battle || battle.state.fase === "fin") return;
 
     if (action.kind === "cambiar") {
       const next = party.creatures[action.index];
       if (!next || action.index === battle.activeIndex) return;
-      party.creatures[battle.activeIndex] = battle.status.player.creature;
+      party.creatures[battle.activeIndex] = battle.state.player.creature;
       battle.activeIndex = action.index;
-      battle.status = {
-        ...battle.status,
-        player: { ...battle.status.player, creature: { ...next } }
+      battle.state = {
+        ...battle.state,
+        player: { ...battle.state.player, creature: { ...next } }
       };
     }
 
@@ -341,14 +374,14 @@ export async function createSouldollsGame(root: HTMLElement) {
         ? { kind: "cambiar" as const, creature: party.creatures[action.index] }
         : action;
 
-    const resolution = resolverTurno(battle.status, engineAction, Math.random);
-    battle.status = resolution.status;
-    party.vinculos = battle.status.player.vinculos;
+    const resolution = resolverTurno(battle.state, engineAction, Math.random);
+    battle.state = resolution.state;
+    party.vinculos = battle.state.player.vinculos;
     battleUi.setLocked(true);
-    battleUi.render(battle.status, party, battle.activeIndex);
-    playEvents(resolution.eventos, () => {
+    battleUi.render(battle.state, party, battle.activeIndex);
+    playEvents(resolution.events, () => {
       if (!battle) return;
-      if (battle.status.fase === "fin") {
+      if (battle.state.fase === "fin") {
         finishBattle();
       } else {
         battleUi.setLocked(false);
@@ -373,24 +406,24 @@ export async function createSouldollsGame(root: HTMLElement) {
     const finished = battle;
     battle = undefined;
 
-    party.creatures[finished.activeIndex] = finished.status.player.creature;
-    party.vinculos = finished.status.player.vinculos;
+    party.creatures[finished.activeIndex] = finished.state.player.creature;
+    party.vinculos = finished.state.player.vinculos;
 
-    if (finished.status.resultado === "captura") {
+    if (finished.state.result === "captura") {
       const captured = finished.rival;
       const added = addToParty(party, captured);
-      releaseWild(finished.wild, true);
+      releaseWorldWild(finished.entityId);
 
       if (added) {
         ui.showToast(`${creatureName(captured)} acepta el vínculo y se une a tu colección`);
       } else {
         ui.showToast("Tu colección está llena: el alma vuelve al claro");
       }
-    } else if (finished.status.resultado === "victoria") {
+    } else if (finished.state.result === "victoria") {
       const leader = party.creatures[finished.activeIndex];
       const reward = xpReward(leader, finished.rival);
       const result = gainXp(leader, reward);
-      let leveled = result.creature;
+      let leveled = gainEVs(result.creature, evReward(finished.rival));
 
       if (result.levelsGained > 0) {
         leveled = evolveCreature(leveled);
@@ -399,14 +432,16 @@ export async function createSouldollsGame(root: HTMLElement) {
             leveled.speciesId !== result.creature.speciesId ? " y evolucionó" : ""
           }`
         );
+      } else {
+        ui.showToast(`${creatureName(leveled)} gana ${reward} de experiencia`);
       }
 
       party.creatures[finished.activeIndex] = leveled;
       party.vinculos += 2;
-      releaseWild(finished.wild, true);
-      healParty(party);
-    } else if (finished.status.resultado === "derrota") {
-      healParty(party);
+      releaseWorldWild(finished.entityId);
+      healPartyFully(party);
+    } else if (finished.state.result === "derrota") {
+      healPartyFully(party);
       playerPosition.x = 0;
       playerPosition.z = 13.2;
       runtime.setTargetLocalTransform(SOULDOLLS_ENTITY_IDS.player, {
@@ -422,45 +457,24 @@ export async function createSouldollsGame(root: HTMLElement) {
     battleUi.setLocked(false);
   }
 
-  function releaseWild(wild: WildState, defeated: boolean) {
-    if (!defeated) return;
+  function releaseWorldWild(entityId: string | undefined) {
+    if (!entityId) return;
 
-    const binding = bindings.get(wild.definition.entityId);
-    binding?.sprite.removeFromParent();
-    setWildHooks(wild, false);
-    wild.timer = 999;
+    bindings.get(entityId)?.sprite.removeFromParent();
 
-    if (wild.definition.roaming) {
-      window.setTimeout(() => {
-        const respawn = bindings.get(wild.definition.entityId);
-        if (respawn) {
-          scene.add(respawn.sprite);
-        }
-        setWildHooks(wild, true);
-        wild.timer = 0;
-      }, 8000);
-    }
-  }
-
-  function setWildHooks(wild: WildState, enabled: boolean) {
-    const speciesId = wild.definition.speciesId;
-
-    for (const hookId of [
-      `hook:wild:${speciesId}:interact`,
-      `hook:wild:${speciesId}:proximity`
-    ]) {
-      const target = runtime.getHookTarget(wild.definition.entityId, hookId);
-      if (target) {
-        target.hook.enabled = enabled;
+    for (const target of runtime.getHookTargets()) {
+      if (target.targetId === entityId) {
+        target.hook.enabled = false;
       }
     }
   }
 
   function persistGame() {
     saveGame({
+      bag: party.bag.items,
       party: party.creatures,
       position: { x: playerPosition.x, z: playerPosition.z },
-      version: 2,
+      version: 3,
       vinculos: party.vinculos
     });
   }
@@ -511,9 +525,13 @@ export async function createSouldollsGame(root: HTMLElement) {
     runtime.update(delta);
 
     if (!battleUi.isBattleOpen) {
-      updateWilds(delta);
+      worldClock.advance(delta);
+      weather.advance(delta);
+      currentZone = zoneAt(playerPosition.x, playerPosition.z);
+      updateEncounters(delta);
     }
 
+    applyLighting();
     animateCharacters(clock.elapsedTime, moving);
     updateSunLight();
     updateCamera(delta);
@@ -526,64 +544,72 @@ export async function createSouldollsGame(root: HTMLElement) {
       hasStarter: party.creatures.length > 0,
       nearbyName: nearby?.name,
       nearbyType: nearby?.type,
-      partySize: party.creatures.length
+      partySize: party.creatures.length,
+      timeLabel: worldClock.timeLabel,
+      weather: weather.weather,
+      zoneName: currentZone.name
     });
 
     renderer.render(scene, camera);
     animationFrame = window.requestAnimationFrame(update);
   }
 
-  function updateWilds(delta: number) {
-    wilds.forEach((wild) => {
-      if (!wild.definition.roaming) return;
-      if (wild.timer > 100) return;
+  function updateEncounters(delta: number) {
+    if (currentZone.safe) {
+      encounterAccumulator = 0;
+      return;
+    }
 
-      wild.timer -= delta;
+    encounterAccumulator += delta * encounterChancePerSecond(currentZone, worldClock.phase);
 
-      const deltaX = wild.target.x - wild.visual.x;
-      const deltaZ = wild.target.z - wild.visual.z;
-      const distance = Math.hypot(deltaX, deltaZ);
+    if (encounterAccumulator < 1) {
+      return;
+    }
 
-      if (distance < 0.12 || wild.timer <= 0) {
-        wild.timer = 2.4 + Math.random() * 2.6;
-        const angle = Math.random() * Math.PI * 2;
-        const radius = 1.4 + Math.random() * WILD_RADIUS;
-        wild.target = {
-          x: clamp(wild.definition.home[0] + Math.cos(angle) * radius, -14, 14),
-          z: clamp(wild.definition.home[1] + Math.sin(angle) * radius, -15, 15)
-        };
-      } else {
-        wild.visual.x += (deltaX / distance) * WILD_SPEED * delta;
-        wild.visual.z += (deltaZ / distance) * WILD_SPEED * delta;
-      }
+    encounterAccumulator = 0;
+    const encounter = rollEncounter(currentZone, worldClock.phase, weather.weather);
 
-      const written = Math.hypot(
-        wild.visual.x - wild.lastWritten.x,
-        wild.visual.z - wild.lastWritten.z
-      );
+    if (!encounter) {
+      return;
+    }
 
-      if (written > 0.5) {
-        wild.lastWritten = { x: wild.visual.x, z: wild.visual.z };
-        runtime.setTargetLocalTransform(wild.definition.entityId, {
-          position: { x: wild.visual.x, y: 0.68, z: wild.visual.z },
-          rotation: { x: 0, y: 0, z: 0 },
-          scale: { x: 1, y: 1, z: 1 }
-        });
-      }
+    startBattle({ creature: createCreature(encounter.speciesId, encounter.level) });
+  }
 
-      if (
-        Math.hypot(
-          playerPosition.x - wild.visual.x,
-          playerPosition.z - wild.visual.z
-        ) < CONTACT_DISTANCE
-      ) {
-        startBattle(wild);
-      }
-    });
+  function applyLighting() {
+    const lighting = lightingFor(worldClock.hour, weather.weather);
+    const key = `${lighting.sunColor}|${lighting.sunIntensity}|${lighting.background}|${weather.weather}`;
+
+    if (key === lightingKey) {
+      return;
+    }
+
+    lightingKey = key;
+
+    if (sun) {
+      sun.color.set(lighting.sunColor);
+      sun.intensity = lighting.sunIntensity;
+    }
+
+    if (hemisphere) {
+      hemisphere.color.set(lighting.hemiColor);
+      hemisphere.groundColor.set(lighting.hemiGround);
+      hemisphere.intensity = lighting.hemiIntensity;
+    }
+
+    if (scene.background instanceof Color) {
+      scene.background.set(lighting.background);
+    }
+
+    if (scene.fog instanceof Fog) {
+      scene.fog.color.set(lighting.fogColor);
+      scene.fog.near = 28 / lighting.fogDensity;
+      scene.fog.far = 76 / lighting.fogDensity;
+    }
   }
 
   function animateCharacters(elapsed: number, moving: boolean) {
-    bindings.forEach((binding, entityId) => {
+    bindings.forEach((binding) => {
       let offset = 0;
 
       if (binding.kind === "player") {
@@ -592,13 +618,6 @@ export async function createSouldollsGame(root: HTMLElement) {
           : Math.sin(elapsed * 2.5) * 0.018;
       } else if (binding.kind === "wild") {
         offset = Math.sin(elapsed * 2.1 + binding.phase) * 0.12;
-      }
-
-      const wild = wilds.get(entityId);
-
-      if (wild) {
-        binding.sprite.position.set(wild.visual.x, 0.68 + offset, wild.visual.z);
-        return;
       }
 
       binding.sprite.position.set(binding.base.x, binding.base.y + offset, binding.base.z);
@@ -661,14 +680,18 @@ function createActorTargets(): Map<string, ActorTarget> {
     });
   }
 
+  for (const sanctuary of SANCTUARIES) {
+    targets.set(sanctuary.entityId, {
+      entityId: sanctuary.entityId,
+      name: sanctuary.name,
+      type: "santuario"
+    });
+  }
+
   return targets;
 }
 
-function createCharacters(
-  scene: Scene,
-  bindings: Map<string, CharacterBinding>,
-  wilds: Map<string, WildState>
-) {
+function createCharacters(scene: Scene, bindings: Map<string, CharacterBinding>) {
   const register = (
     entityId: string,
     sprite: Sprite,
@@ -702,16 +725,7 @@ function createCharacters(
 
   for (const wild of WILD_CREATURES) {
     const species = getSpecies(wild.speciesId);
-    const sprite = createCreatureSprite(species);
-    register(wild.entityId, sprite, "wild", wild.home[0]);
-
-    wilds.set(wild.entityId, {
-      definition: wild,
-      lastWritten: { x: wild.home[0], z: wild.home[1] },
-      target: { x: wild.home[0], z: wild.home[1] },
-      timer: 0,
-      visual: { x: wild.home[0], z: wild.home[1] }
-    });
+    register(wild.entityId, createCreatureSprite(species), "wild", wild.home[0]);
   }
 }
 
@@ -731,6 +745,27 @@ function createPlayerMarker(scene: Scene): Mesh<CircleGeometry, MeshStandardMate
   playerMarker.renderOrder = 1;
   scene.add(playerMarker);
   return playerMarker;
+}
+
+function weatherModifiers(weather: Weather) {
+  return {
+    accuracy: (type: string) => (weather === "viento" && type === "brote" ? 0.9 : 1),
+    damage: (type: string) => {
+      if (weather === "lluvia") {
+        return type === "agua" ? 1.5 : type === "bruma" ? 0.8 : 1;
+      }
+
+      if (weather === "niebla") {
+        return type === "bruma" || type === "sombra" ? 1.3 : 1;
+      }
+
+      if (weather === "viento") {
+        return type === "brote" ? 1.2 : 1;
+      }
+
+      return type === "luz" ? 1.2 : 1;
+    }
+  };
 }
 
 function configureSceneShadows(instance: ThreeRuntimeSceneInstance) {
