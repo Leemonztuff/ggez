@@ -16,21 +16,21 @@ import { applyStages, stageMultiplier, type StageKey } from "./stats";
 import { typeEffectiveness, type TypeId } from "./types";
 
 export type BattleAction =
-  | { kind: "movimiento"; moveIndex: number }
-  | { kind: "cambiar"; creature: Creature }
-  | { kind: "vinculo" }
-  | { kind: "huir" }
-  | { kind: "objeto"; itemId: ItemId; targetIndex: number };
+  | { kind: "move"; moveIndex: number }
+  | { kind: "switch"; creature: Creature }
+  | { kind: "bond" }
+  | { kind: "flee" }
+  | { kind: "item"; itemId: ItemId; targetIndex: number };
 
 export type BattleLogKind =
-  | "info"
-  | "damage"
-  | "status"
-  | "faint"
   | "capture"
+  | "damage"
+  | "faint"
+  | "info"
+  | "item"
   | "result"
   | "stage"
-  | "item";
+  | "status";
 
 export type BattleLogEntry = {
   kind: BattleLogKind;
@@ -39,14 +39,14 @@ export type BattleLogEntry = {
 
 export type Combatant = {
   bondBonus: number;
+  bonds: number;
   creature: Creature;
   flinched: boolean;
   isPlayer: boolean;
   moves: MoveId[];
-  vinculos: number;
 };
 
-export type BattleResult = "victoria" | "derrota" | "huida" | "captura";
+export type BattleResult = "captured" | "defeat" | "fled" | "victory";
 
 export type BattleModifiers = {
   accuracy?: (type: TypeId) => number;
@@ -55,18 +55,18 @@ export type BattleModifiers = {
 
 export type BattleState = {
   bag: Bag;
-  fase: "eleccion" | "fin";
   log: BattleLogEntry[];
+  modifiers?: BattleModifiers;
+  phase: "over" | "select";
   player: Combatant;
-  modificadores?: BattleModifiers;
-  resultado?: BattleResult;
+  result?: BattleResult;
   rival: Combatant;
-  turno: number;
+  turn: number;
 };
 
 export type TurnResolution = {
-  status: BattleState;
-  eventos: BattleLogEntry[];
+  events: BattleLogEntry[];
+  state: BattleState;
 };
 
 const STRUGGLE_POWER = 50;
@@ -76,7 +76,7 @@ const CRIT_CHANCES = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1];
 
 export const STRUGGLE_MOVE: Move = {
   accuracy: 100,
-  category: "fisico",
+  category: "physical",
   critStage: 0,
   description: "Un último recurso cuando ya no quedan PS de movimientos.",
   id: "esfuerzo",
@@ -84,7 +84,6 @@ export const STRUGGLE_MOVE: Move = {
   pp: 0,
   power: STRUGGLE_POWER,
   priority: 0,
-  recoil: STRUGGLE_RECOIL,
   type: "sombra"
 };
 
@@ -96,139 +95,53 @@ export function resolveMove(moveId: AnyMoveId): Move {
   return MOVES[moveId];
 }
 
-export function iniciarBatalla(
-  player: Combatant,
-  rival: Combatant,
-  bag: Bag
-): BattleState {
+export function startBattle(player: Combatant, rival: Combatant, bag: Bag): BattleState {
   return {
     bag,
-    fase: "eleccion",
     log: [
       {
         kind: "info",
         text: `${creatureName(player.creature)} se adelanta frente a ${creatureName(rival.creature)}.`
       }
     ],
+    phase: "select",
     player,
     rival,
-    turno: 1
+    turn: 1
   };
 }
 
-export function calculardamage(
-  atacante: Creature,
-  defensor: Creature,
+export function computeDamage(
+  attacker: Creature,
+  defender: Creature,
   move: Move,
   rng: Rng,
-  criticoForzado = false,
-  modificadores?: BattleModifiers
-): { damage: number; critico: boolean; efectividad: number } {
-  const atk = statEnCombate(atacante, "atk");
-  const def = statEnCombate(defensor, "def");
+  forcedCritical = false,
+  modifiers?: BattleModifiers
+): { critical: boolean; damage: number; effectiveness: number } {
+  const attack = combatStat(attacker, "atk");
+  const defense = combatStat(defender, "def");
   const base =
     Math.floor(
       Math.floor(
-        (Math.floor((2 * atacante.level) / 5 + 2) * move.power * atk) / Math.max(1, def)
+        (Math.floor((2 * attacker.level) / 5 + 2) * move.power * attack) / Math.max(1, defense)
       ) / 50
     ) + 2;
-  const stab = getSpecies(atacante.speciesId).types.includes(move.type) ? 1.5 : 1;
-  const efectividad = typeEffectiveness(move.type, getSpecies(defensor.speciesId).types);
-  const clima = modificadores?.damage?.(move.type) ?? 1;
+  const stab = getSpecies(attacker.speciesId).types.includes(move.type) ? 1.5 : 1;
+  const effectiveness = typeEffectiveness(move.type, getSpecies(defender.speciesId).types);
+  const weather = modifiers?.damage?.(move.type) ?? 1;
   const critChance = CRIT_CHANCES[Math.min(CRIT_CHANCES.length - 1, move.critStage)];
-  const critico = criticoForzado || rng() < critChance;
-  const variacion = 0.85 + rng() * 0.15;
+  const critical = forcedCritical || rng() < critChance;
+  const variation = 0.85 + rng() * 0.15;
   const damage = Math.max(
     1,
-    Math.floor(base * stab * efectividad * clima * (critico ? 1.5 : 1) * variacion)
+    Math.floor(base * stab * effectiveness * weather * (critical ? 1.5 : 1) * variation)
   );
 
-  return { damage, critico, efectividad };
+  return { critical, damage, effectiveness };
 }
 
-export function resolverTurno(
-  state: BattleState,
-  accion: BattleAction,
-  rng: Rng
-): TurnResolution {
-  if (state.fase === "fin") {
-    return { status: state, eventos: [] };
-  }
-
-  const eventos: BattleLogEntry[] = [];
-  const player = cloneCombatant(state.player);
-  const rival = cloneCombatant(state.rival);
-  const bag = state.bag;
-  let resultado: BattleResult | undefined = state.resultado;
-
-  if (accion.kind === "vinculo") {
-    resultado = resolverVinculo(player, rival, rng, eventos);
-  } else if (accion.kind === "huir") {
-    resultado = resolverHuida(player, rival, state.turno, rng, eventos);
-  } else if (accion.kind === "objeto") {
-    usarObjeto(accion, player, rival, bag, eventos);
-  } else if (accion.kind === "cambiar") {
-    const saliente = creatureName(player.creature);
-    player.creature = { ...accion.creature, pp: restorePP(accion.creature).pp };
-    eventos.push({
-      kind: "info",
-      text: `Retiras a ${saliente} y preparas a ${creatureName(player.creature)}.`
-    });
-  }
-
-  if (!resultado && accion.kind !== "cambiar" && accion.kind !== "objeto") {
-    const eleccionplayer = elegirMovimiento(player, accion);
-    const eleccionRival = elegirMovimientoRival(rival, player, rng);
-    const orden = ordenarTurno(player, rival, eleccionplayer, eleccionRival, rng);
-
-    for (const lado of orden) {
-      if (resultado) break;
-      if (isFainted(player.creature) || isFainted(rival.creature)) break;
-
-      if (lado === "player") {
-        ejecutarMovimiento(player, rival, eleccionplayer, rng, eventos, state.modificadores);
-      } else {
-        ejecutarMovimiento(rival, player, eleccionRival, rng, eventos, state.modificadores);
-      }
-    }
-  }
-
-  if (!resultado) {
-    aplicarstatussFinDeTurno(player, rng, eventos);
-    aplicarstatussFinDeTurno(rival, rng, eventos);
-  }
-
-  if (!resultado) {
-    if (isFainted(rival.creature)) {
-      resultado = "victoria";
-      eventos.push({
-        kind: "result",
-        text: `${creatureName(rival.creature)} cae y se disuelve en luz de bruma.`
-      });
-    } else if (isFainted(player.creature)) {
-      resultado = "derrota";
-      eventos.push({
-        kind: "result",
-        text: `${creatureName(player.creature)} ya no puede seguir luchando.`
-      });
-    }
-  }
-
-  return {
-    status: {
-      bag,
-      fase: resultado ? "fin" : "eleccion",
-      log: [...state.log, ...eventos],
-      player,
-      resultado,
-      rival,
-      turno: state.turno + (resultado ? 0 : 1)
-    },
-    eventos
-  };
-}
-
-export function statEnCombate(creature: Creature, key: "atk" | "def" | "spd"): number {
+export function combatStat(creature: Creature, key: "atk" | "def" | "spd"): number {
   let value = creatureStat(creature, key);
   const stageKey: StageKey = key;
   value *= stageMultiplier(creature.stages[stageKey]);
@@ -248,91 +161,174 @@ export function statEnCombate(creature: Creature, key: "atk" | "def" | "spd"): n
   return Math.max(1, Math.round(value));
 }
 
-export function precisionEfectiva(
-  atacante: Creature,
-  defensor: Creature,
-  precision: number,
+export function effectiveAccuracy(
+  attacker: Creature,
+  defender: Creature,
+  accuracy: number,
   moveType?: TypeId,
-  modificadores?: BattleModifiers
+  modifiers?: BattleModifiers
 ): number {
-  const clima = moveType ? modificadores?.accuracy?.(moveType) ?? 1 : 1;
+  const weather = moveType ? modifiers?.accuracy?.(moveType) ?? 1 : 1;
 
   return (
-    precision *
-    stageMultiplier(atacante.stages.acc, true) *
-    stageMultiplier(defensor.stages.eva, true) *
-    clima
+    accuracy *
+    stageMultiplier(attacker.stages.acc, true) *
+    stageMultiplier(defender.stages.eva, true) *
+    weather
   );
 }
 
-export function elegirMovimientoRival(
-  rival: Combatant,
-  objetivo: Combatant,
+export function resolveTurn(
+  state: BattleState,
+  action: BattleAction,
   rng: Rng
-): { moveId: AnyMoveId; moveIndex: number } {
-  const disponibles = rival.creature.moves
-    .map((moveId, index) => ({ moveId, index }))
-    .filter(({ index }) => (rival.creature.pp[index] ?? 0) > 0);
-
-  if (disponibles.length === 0) {
-    return { moveId: "esfuerzo", moveIndex: -1 };
+): TurnResolution {
+  if (state.phase === "over") {
+    return { events: [], state };
   }
 
-  let mejor = disponibles[0];
-  let mejordamage = -1;
+  const events: BattleLogEntry[] = [];
+  const player = cloneCombatant(state.player);
+  const rival = cloneCombatant(state.rival);
+  const bag = state.bag;
+  let result: BattleResult | undefined = state.result;
 
-  for (const candidato of disponibles) {
-    const move = MOVES[candidato.moveId];    const estimacion =
-      move.category === "status"
-        ? 0
-        : calculardamage(rival.creature, objetivo.creature, move, () => 0.99).damage *
-          typeEffectiveness(move.type, getSpecies(objetivo.creature.speciesId).types);
+  if (action.kind === "bond") {
+    result = resolveCapture(player, rival, rng, events);
+  } else if (action.kind === "flee") {
+    result = resolveFlee(player, rival, state.turn, rng, events);
+  } else if (action.kind === "item") {
+    useItem(action, player, rival, bag, events);
+  } else if (action.kind === "switch") {
+    const leaving = creatureName(player.creature);
+    player.creature = { ...action.creature, pp: restorePP(action.creature).pp };
+    events.push({
+      kind: "info",
+      text: `Retiras a ${leaving} y preparas a ${creatureName(player.creature)}.`
+    });
+  }
 
-    if (estimacion > mejordamage) {
-      mejor = candidato;
-      mejordamage = estimacion;
+  if (!result && action.kind !== "switch" && action.kind !== "item") {
+    const playerChoice = choosePlayerMove(player, action);
+    const rivalChoice = chooseRivalMove(rival, player, rng);
+    const order = resolveTurnOrder(player, rival, playerChoice, rivalChoice, rng);
+
+    for (const side of order) {
+      if (result) break;
+      if (isFainted(player.creature) || isFainted(rival.creature)) break;
+
+      if (side === "player") {
+        executeMove(player, rival, playerChoice, rng, events, state.modifiers);
+      } else {
+        executeMove(rival, player, rivalChoice, rng, events, state.modifiers);
+      }
     }
   }
 
-  return { moveId: mejor.moveId, moveIndex: mejor.index };
+  if (!result) {
+    applyEndOfTurn(player, events);
+    applyEndOfTurn(rival, events);
+  }
+
+  if (!result) {
+    if (isFainted(rival.creature)) {
+      result = "victory";
+      events.push({
+        kind: "result",
+        text: `${creatureName(rival.creature)} cae y se disuelve en luz de bruma.`
+      });
+    } else if (isFainted(player.creature)) {
+      result = "defeat";
+      events.push({
+        kind: "result",
+        text: `${creatureName(player.creature)} ya no puede seguir luchando.`
+      });
+    }
+  }
+
+  return {
+    events,
+    state: {
+      bag,
+      log: [...state.log, ...events],
+      modifiers: state.modifiers,
+      phase: result ? "over" : "select",
+      player,
+      result,
+      rival,
+      turn: state.turn + (result ? 0 : 1)
+    }
+  };
 }
 
-function elegirMovimiento(
-  combatiente: Combatant,
-  accion: BattleAction
+export function chooseRivalMove(
+  rival: Combatant,
+  target: Combatant,
+  rng: Rng
 ): { moveId: AnyMoveId; moveIndex: number } {
-  if (accion.kind !== "movimiento") {
+  const available = rival.creature.moves
+    .map((moveId, index) => ({ moveId, index }))
+    .filter(({ index }) => (rival.creature.pp[index] ?? 0) > 0);
+
+  if (available.length === 0) {
     return { moveId: "esfuerzo", moveIndex: -1 };
   }
 
-  const index = accion.moveIndex;
-  const moveId = combatiente.creature.moves[index];
-  const pp = combatiente.creature.pp[index] ?? 0;
+  let best = available[0];
+  let bestScore = -1;
 
-  if (!moveId || pp <= 0) {
+  for (const candidate of available) {
+    const move = MOVES[candidate.moveId];
+    const score =
+      move.category === "estado"
+        ? 0
+        : computeDamage(rival.creature, target.creature, move, () => 0.99).damage *
+          typeEffectiveness(move.type, getSpecies(target.creature.speciesId).types);
+
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return { moveId: best.moveId, moveIndex: best.index };
+}
+
+function choosePlayerMove(
+  combatant: Combatant,
+  action: BattleAction
+): { moveId: AnyMoveId; moveIndex: number } {
+  if (action.kind !== "move") {
+    return { moveId: "esfuerzo", moveIndex: -1 };
+  }
+
+  const index = action.moveIndex;
+  const moveId = combatant.creature.moves[index];
+
+  if (!moveId || (combatant.creature.pp[index] ?? 0) <= 0) {
     return { moveId: "esfuerzo", moveIndex: -1 };
   }
 
   return { moveId, moveIndex: index };
 }
 
-function ejecutarMovimiento(
+function executeMove(
   actor: Combatant,
-  objetivo: Combatant,
-  eleccion: { moveId: AnyMoveId; moveIndex: number },
+  target: Combatant,
+  choice: { moveId: AnyMoveId; moveIndex: number },
   rng: Rng,
-  eventos: BattleLogEntry[],
-  modificadores?: BattleModifiers
+  events: BattleLogEntry[],
+  modifiers?: BattleModifiers
 ) {
   const creature = actor.creature;
 
-  if (!puedeActuar(creature, rng, eventos)) {
+  if (!canAct(creature, rng, events)) {
     return;
   }
 
   if (actor.flinched) {
     actor.flinched = false;
-    eventos.push({
+    events.push({
       kind: "info",
       text: `${creatureName(creature)} se tambalea y no achieves a actuar.`
     });
@@ -340,120 +336,116 @@ function ejecutarMovimiento(
   }
 
   if (creature.status === "confusion" && rng() < CONFUSION_CHANCE) {
-    const dano = Math.max(1, Math.floor(creatureMaxHp(creature) / 8));
-    creature.currentHp = Math.max(0, creature.currentHp - dano);
-    eventos.push({
+    const damage = Math.max(1, Math.floor(creatureMaxHp(creature) / 8));
+    creature.currentHp = Math.max(0, creature.currentHp - damage);
+    events.push({
       kind: "damage",
-      text: `${creatureName(creature)} está confundido y se golpea a sí mismo (${dano}).`
+      text: `${creatureName(creature)} está confundido y se golpea a sí mismo (${damage}).`
     });
     return;
   }
 
-  if (eleccion.moveId === "esfuerzo") {
-    ejecutarEsfuerzo(actor, objetivo, rng, eventos);
+  if (choice.moveId === "esfuerzo") {
+    executeStruggle(actor, target, rng, events);
     return;
   }
 
-  const move = resolveMove(eleccion.moveId);
+  const move = resolveMove(choice.moveId);
 
-  if (eleccion.moveIndex >= 0 && actor.creature.pp[eleccion.moveIndex] > 0) {
-    actor.creature.pp[eleccion.moveIndex] -= 1;
+  if (choice.moveIndex >= 0 && actor.creature.pp[choice.moveIndex] > 0) {
+    actor.creature.pp[choice.moveIndex] -= 1;
   }
 
-  if (
-    rng() * 100 >=
-    precisionEfectiva(actor.creature, objetivo.creature, move.accuracy, move.type, modificadores)
-  ) {
-    eventos.push({ kind: "info", text: `El golpe de ${creatureName(creature)} falla.` });
+  const accuracy = effectiveAccuracy(actor.creature, target.creature, move.accuracy, move.type, modifiers);
+
+  if (rng() * 100 >= accuracy) {
+    events.push({ kind: "info", text: `El golpe de ${creatureName(creature)} falla.` });
     return;
   }
 
-  if (move.category === "status") {
-    aplicarEfecto(actor, objetivo, move, rng, eventos);
+  if (move.category === "estado") {
+    applyEffect(actor, target, move, rng, events);
     return;
   }
 
-  const golpes = move.multiHit
-    ? 1 + Math.floor(rng() * move.multiHit.max)
-    : 1;
+  const hits = move.multiHit ? 1 + Math.floor(rng() * move.multiHit.max) : 1;
   let total = 0;
-  let ultimoEfecto = 1;
+  let lastEffectiveness = 1;
 
-  for (let golpe = 0; golpe < golpes; golpe += 1) {
-    if (move.multiHit && golpe > 0 && rng() * 100 >= move.multiHit.precision) {
+  for (let hit = 0; hit < hits; hit += 1) {
+    if (move.multiHit && hit > 0 && rng() * 100 >= move.multiHit.precision) {
       break;
     }
 
-    const resultado = calculardamage(actor.creature, objetivo.creature, move, rng, false, modificadores);
-    objetivo.creature.currentHp = Math.max(0, objetivo.creature.currentHp - resultado.damage);
-    total += resultado.damage;
-    ultimoEfecto = resultado.efectividad;
+    const outcome = computeDamage(actor.creature, target.creature, move, rng, false, modifiers);
+    target.creature.currentHp = Math.max(0, target.creature.currentHp - outcome.damage);
+    total += outcome.damage;
+    lastEffectiveness = outcome.effectiveness;
   }
 
-  const mensajeEfecto =
-    ultimoEfecto > 1 ? "¡Es supereficaz!" : ultimoEfecto < 1 ? "No es muy eficaz..." : "";
-  eventos.push({
+  const note =
+    lastEffectiveness > 1 ? "¡Es supereficaz!" : lastEffectiveness < 1 ? "No es muy eficaz..." : "";
+  events.push({
     kind: "damage",
-    text: `${creatureName(actor.creature)} usa ${move.name} y causa ${total} de daño. ${mensajeEfecto}`.trim()
+    text: `${creatureName(actor.creature)} usa ${move.name} y causa ${total} de daño. ${note}`.trim()
   });
 
   if (move.drain) {
-    const curado = Math.max(1, Math.floor(total * move.drain));
+    const healed = Math.max(1, Math.floor(total * move.drain));
     const maxHp = creatureMaxHp(actor.creature);
-    actor.creature.currentHp = Math.min(maxHp, actor.creature.currentHp + curado);
-    eventos.push({
+    actor.creature.currentHp = Math.min(maxHp, actor.creature.currentHp + healed);
+    events.push({
       kind: "info",
-      text: `${creatureName(actor.creature)} absorbe ${curado} de PS.`
+      text: `${creatureName(actor.creature)} absorbe ${healed} de PS.`
     });
   }
 
   if (move.recoil) {
-    const rebote = Math.max(1, Math.floor(total * move.recoil));
-    actor.creature.currentHp = Math.max(0, actor.creature.currentHp - rebote);
-    eventos.push({
+    const recoil = Math.max(1, Math.floor(total * move.recoil));
+    actor.creature.currentHp = Math.max(0, actor.creature.currentHp - recoil);
+    events.push({
       kind: "damage",
-      text: `${creatureName(actor.creature)} sufre ${rebote} de daño por el rechazo.`
+      text: `${creatureName(actor.creature)} sufre ${recoil} de daño por el rechazo.`
     });
   }
 
   if (move.flinch && rng() < move.flinch) {
-    objetivo.flinched = true;
-    eventos.push({
+    target.flinched = true;
+    events.push({
       kind: "status",
-      text: `${creatureName(objetivo.creature)} queda tambaleante.`
+      text: `${creatureName(target.creature)} queda tambaleante.`
     });
   }
 
-  if (isFainted(objetivo.creature)) {
-    eventos.push({ kind: "faint", text: `${creatureName(objetivo.creature)} se apaga.` });
+  if (isFainted(target.creature)) {
+    events.push({ kind: "faint", text: `${creatureName(target.creature)} se apaga.` });
   }
 }
 
-function ejecutarEsfuerzo(
+function executeStruggle(
   actor: Combatant,
-  objetivo: Combatant,
+  target: Combatant,
   rng: Rng,
-  eventos: BattleLogEntry[]
+  events: BattleLogEntry[]
 ) {
-  const movimiento = STRUGGLE_MOVE;
-  const { damage } = calculardamage(actor.creature, objetivo.creature, movimiento, rng, true);
-  objetivo.creature.currentHp = Math.max(0, objetivo.creature.currentHp - damage);
-  const rebote = Math.max(1, Math.floor(creatureMaxHp(actor.creature) * STRUGGLE_RECOIL));
-  actor.creature.currentHp = Math.max(0, actor.creature.currentHp - rebote);
+  const { damage } = computeDamage(actor.creature, target.creature, STRUGGLE_MOVE, rng, true);
+  target.creature.currentHp = Math.max(0, target.creature.currentHp - damage);
+  const recoil = Math.max(1, Math.floor(creatureMaxHp(actor.creature) * STRUGGLE_RECOIL));
+  actor.creature.currentHp = Math.max(0, actor.creature.currentHp - recoil);
 
-  eventos.push({
+  events.push({
     kind: "damage",
     text: `¡Sin PS de movimientos, ${creatureName(actor.creature)} usa Esfuerzo y causa ${damage} de daño!`
   });
-  eventos.push({
+  events.push({
     kind: "damage",
-    text: `${creatureName(actor.creature)} sufre ${rebote} de daño por el esfuerzo.`
+    text: `${creatureName(actor.creature)} sufre ${recoil} de daño por el esfuerzo.`
   });
 }
 
-function puedeActuar(creature: Creature, rng: Rng, eventos: BattleLogEntry[]): boolean {
+function canAct(creature: Creature, rng: Rng, events: BattleLogEntry[]): boolean {
   if (creature.status === "dormido") {
-    eventos.push({
+    events.push({
       kind: "info",
       text: `${creatureName(creature)} duerme profundamente y no puede moverse.`
     });
@@ -461,7 +453,7 @@ function puedeActuar(creature: Creature, rng: Rng, eventos: BattleLogEntry[]): b
   }
 
   if (creature.status === "paralizado" && rng() < 0.25) {
-    eventos.push({
+    events.push({
       kind: "info",
       text: `${creatureName(creature)} está paralizado y no puede moverse.`
     });
@@ -471,92 +463,80 @@ function puedeActuar(creature: Creature, rng: Rng, eventos: BattleLogEntry[]): b
   return true;
 }
 
-function aplicarEfecto(
+function applyEffect(
   actor: Combatant,
-  objetivo: Combatant,
+  target: Combatant,
   move: Move,
   rng: Rng,
-  eventos: BattleLogEntry[]
+  events: BattleLogEntry[]
 ) {
-  const efecto = move.effect;
+  const effect = move.effect;
 
-  if (!efecto) return;
+  if (!effect) return;
 
-  if (efecto.kind === "curacion") {
+  if (effect.kind === "curacion") {
     const maxHp = creatureMaxHp(actor.creature);
-    const recuperado = Math.max(0, Math.round(maxHp * efecto.ratio));
-    actor.creature.currentHp = Math.min(maxHp, actor.creature.currentHp + recuperado);
-    eventos.push({
+    const healed = Math.max(0, Math.round(maxHp * effect.ratio));
+    actor.creature.currentHp = Math.min(maxHp, actor.creature.currentHp + healed);
+    events.push({
       kind: "status",
-      text: `${creatureName(actor.creature)} recupera ${recuperado} de PS con ${move.name}.`
+      text: `${creatureName(actor.creature)} recupera ${healed} de PS con ${move.name}.`
     });
     return;
   }
 
-  if (efecto.kind === "etapas") {
-    const objetivoEtapas = efecto.target === "propio" ? actor : objetivo;
-    objetivoEtapas.creature.stages = applyStages(
-      objetivoEtapas.creature.stages,
-      efecto.cambios
-    );
-    const resumen = Object.entries(efecto.cambios)
+  if (effect.kind === "etapas") {
+    const receiver = effect.target === "self" ? actor : target;
+    receiver.creature.stages = applyStages(receiver.creature.stages, effect.cambios);
+    const summary = Object.entries(effect.cambios)
       .map(([key, amount]) => `${key} ${(amount ?? 0) > 0 ? "+" : ""}${amount}`)
       .join(", ");
-    eventos.push({
+    events.push({
       kind: "stage",
-      text: `${creatureName(objetivoEtapas.creature)}: ${resumen}.`
+      text: `${creatureName(receiver.creature)}: ${summary}.`
     });
     return;
   }
 
-  if (efecto.kind === "confusion") {
-    if (rng() < efecto.chance) {
-      objetivo.creature.status = "confusion";
-      objetivo.creature.statusTurns = undefined;
-      eventos.push({
+  if (effect.kind === "confusion") {
+    if (rng() < effect.chance) {
+      target.creature.status = "confusion";
+      target.creature.statusTurns = 3;
+      events.push({
         kind: "status",
-        text: `${creatureName(objetivo.creature)} quedó confundido.`
+        text: `${creatureName(target.creature)} quedó confundido.`
       });
     }
     return;
   }
 
-  if (objetivo.creature.status) {
-    eventos.push({
+  if (target.creature.status) {
+    events.push({
       kind: "status",
-      text: `${creatureName(objetivo.creature)} ya está afectado y resiste el status.`
+      text: `${creatureName(target.creature)} ya está afectado y resiste el estado.`
     });
     return;
   }
 
-  objetivo.creature.status = efecto.status;
-  objetivo.creature.statusTurns =
-    efecto.status === "dormido" ? 1 + Math.floor(rng() * 3) : undefined;
+  target.creature.status = effect.status;
+  target.creature.statusTurns =
+    effect.status === "dormido" ? 1 + Math.floor(rng() * 3) : undefined;
 
-  eventos.push({
+  events.push({
     kind: "status",
-    text: `${creatureName(objetivo.creature)} quedó ${efecto.status}.`
+    text: `${creatureName(target.creature)} quedó ${effect.status}.`
   });
 }
 
-function aplicarstatussFinDeTurno(combatiente: Combatant, rng: Rng, eventos: BattleLogEntry[]) {
-  const creature = combatiente.creature;
+function applyEndOfTurn(combatant: Combatant, events: BattleLogEntry[]) {
+  const creature = combatant.creature;
 
-  if (creature.status === "veneno") {
-    const dano = Math.max(1, Math.floor(creatureMaxHp(creature) / 16));
-    creature.currentHp = Math.max(0, creature.currentHp - dano);
-    eventos.push({
+  if (creature.status === "veneno" || creature.status === "quemadura") {
+    const damage = Math.max(1, Math.floor(creatureMaxHp(creature) / 16));
+    creature.currentHp = Math.max(0, creature.currentHp - damage);
+    events.push({
       kind: "damage",
-      text: `${creatureName(creature)} sufre ${dano} de daño por veneno.`
-    });
-  }
-
-  if (creature.status === "quemadura") {
-    const dano = Math.max(1, Math.floor(creatureMaxHp(creature) / 16));
-    creature.currentHp = Math.max(0, creature.currentHp - dano);
-    eventos.push({
-      kind: "damage",
-      text: `${creatureName(creature)} sufre ${dano} de daño por la quemadura.`
+      text: `${creatureName(creature)} sufre ${damage} de daño por ${creature.status}.`
     });
   }
 
@@ -566,7 +546,7 @@ function aplicarstatussFinDeTurno(combatiente: Combatant, rng: Rng, eventos: Bat
     if (creature.statusTurns <= 0) {
       creature.status = undefined;
       creature.statusTurns = undefined;
-      eventos.push({
+      events.push({
         kind: "status",
         text: `${creatureName(creature)} se despierta y vuelve a estar alerta.`
       });
@@ -579,211 +559,215 @@ function aplicarstatussFinDeTurno(combatiente: Combatant, rng: Rng, eventos: Bat
     if (creature.statusTurns <= 0) {
       creature.status = undefined;
       creature.statusTurns = undefined;
-      eventos.push({
+      events.push({
         kind: "status",
         text: `${creatureName(creature)} recupera la lucidez.`
       });
     }
   }
-
-  void rng;
 }
 
-function ordenarTurno(
+function resolveTurnOrder(
   player: Combatant,
   rival: Combatant,
-  eleccionplayer: { moveId: AnyMoveId; moveIndex: number },
-  eleccionRival: { moveId: AnyMoveId; moveIndex: number },
+  playerChoice: { moveId: AnyMoveId; moveIndex: number },
+  rivalChoice: { moveId: AnyMoveId; moveIndex: number },
   rng: Rng
-): Array<"player" | "rival"> {
-  const prioridadplayer = resolveMove(eleccionplayer.moveId).priority;
-  const prioridadRival = resolveMove(eleccionRival.moveId).priority;
+): Array<"player" | "foe"> {
+  const playerPriority = resolveMove(playerChoice.moveId).priority;
+  const rivalPriority = resolveMove(rivalChoice.moveId).priority;
 
-  if (prioridadplayer !== prioridadRival) {
-    return prioridadplayer > prioridadRival ? ["player", "rival"] : ["rival", "player"];
+  if (playerPriority !== rivalPriority) {
+    return playerPriority > rivalPriority ? ["player", "foe"] : ["foe", "player"];
   }
 
-  const velocidadplayer = statEnCombate(player.creature, "spd");
-  const velocidadRival = statEnCombate(rival.creature, "spd");
+  const playerSpeed = combatStat(player.creature, "spd");
+  const rivalSpeed = combatStat(rival.creature, "spd");
 
-  if (velocidadplayer === velocidadRival) {
-    return rng() < 0.5 ? ["player", "rival"] : ["rival", "player"];
+  if (playerSpeed === rivalSpeed) {
+    return rng() < 0.5 ? ["player", "foe"] : ["foe", "player"];
   }
 
-  return velocidadplayer > velocidadRival ? ["player", "rival"] : ["rival", "player"];
+  return playerSpeed > rivalSpeed ? ["player", "foe"] : ["foe", "player"];
 }
 
-function resolverVinculo(
+function resolveCapture(
   player: Combatant,
   rival: Combatant,
   rng: Rng,
-  eventos: BattleLogEntry[]
+  events: BattleLogEntry[]
 ): BattleResult | undefined {
-  if (player.vinculos <= 0) {
-    eventos.push({ kind: "info", text: "No te quedan vínculos para crear." });
+  if (player.bonds <= 0) {
+    events.push({ kind: "info", text: "No te quedan vínculos para crear." });
     return undefined;
   }
 
-  player.vinculos -= 1;
-  const especie = getSpecies(rival.creature.speciesId);
+  player.bonds -= 1;
+  const species = getSpecies(rival.creature.speciesId);
   const maxHp = creatureMaxHp(rival.creature);
-  const restante = Math.max(0, rival.creature.currentHp) / maxHp;
-  const ventajaNivel = Math.max(
+  const remaining = Math.max(0, rival.creature.currentHp) / maxHp;
+  const levelEdge = Math.max(
     0.5,
     Math.min(1.5, rival.creature.level / Math.max(1, player.creature.level))
   );
-  const probabilidad = Math.max(
+  const chance = Math.max(
     0.05,
     Math.min(
       0.95,
-      (especie.catchRate / 255) * (1.6 - restante) * ventajaNivel + player.bondBonus
+      (species.catchRate / 255) * (1.6 - remaining) * levelEdge + player.bondBonus
     )
   );
 
-  eventos.push({
+  events.push({
     kind: "capture",
     text: `Lanzas un vínculo hacia ${creatureName(rival.creature)}...`
   });
 
-  if (rng() < probabilidad) {
-    eventos.push({
+  if (rng() < chance) {
+    events.push({
       kind: "capture",
       text: `¡${creatureName(rival.creature)} acepta el vínculo y se une a tu colección!`
     });
-    return "captura";
+    return "captured";
   }
 
-  eventos.push({
+  events.push({
     kind: "capture",
     text: `¡El vínculo se rompe! ${creatureName(rival.creature)} sigue libre.`
   });
   return undefined;
 }
 
-function resolverHuida(
+function resolveFlee(
   player: Combatant,
   rival: Combatant,
-  turno: number,
+  turn: number,
   rng: Rng,
-  eventos: BattleLogEntry[]
+  events: BattleLogEntry[]
 ): BattleResult | undefined {
-  const velocidadplayer = statEnCombate(player.creature, "spd");
-  const velocidadRival = statEnCombate(rival.creature, "spd");
-  const probabilidad = Math.max(
+  const playerSpeed = combatStat(player.creature, "spd");
+  const rivalSpeed = combatStat(rival.creature, "spd");
+  const chance = Math.max(
     0.15,
-    Math.min(0.95, 0.35 + (velocidadplayer - velocidadRival) * 0.02 + turno * 0.05)
+    Math.min(0.95, 0.35 + (playerSpeed - rivalSpeed) * 0.02 + turn * 0.05)
   );
 
-  if (rng() < probabilidad) {
-    eventos.push({
+  if (rng() < chance) {
+    events.push({
       kind: "result",
       text: "Escapas entre la bruma antes de que el alma note la ausencia."
     });
-    return "huida";
+    return "fled";
   }
 
-  eventos.push({ kind: "info", text: "No has podido huir. El claro te cierra el paso." });
+  events.push({ kind: "info", text: "No has podido huir. El claro te cierra el paso." });
   return undefined;
 }
 
-function usarObjeto(
-  accion: Extract<BattleAction, { kind: "objeto" }>,
+function useItem(
+  action: Extract<BattleAction, { kind: "item" }>,
   player: Combatant,
   rival: Combatant,
   bag: Bag,
-  eventos: BattleLogEntry[]
+  events: BattleLogEntry[]
 ) {
-  const item = ITEMS[accion.itemId];
+  const item = ITEMS[action.itemId];
 
   if (!item) {
-    eventos.push({ kind: "info", text: "Ese objeto no existe." });
+    events.push({ kind: "info", text: "Ese objeto no existe." });
     return;
   }
 
-  if ((bag.items[accion.itemId] ?? 0) <= 0) {
-    eventos.push({ kind: "info", text: `No tienes ${item.name}.` });
+  if ((bag.items[action.itemId] ?? 0) <= 0) {
+    events.push({ kind: "info", text: `No tienes ${item.name}.` });
     return;
   }
 
-  bag.items[accion.itemId] = (bag.items[accion.itemId] ?? 0) - 1;
+  bag.items[action.itemId] = (bag.items[action.itemId] ?? 0) - 1;
 
-  if (bag.items[accion.itemId] === 0) {
-    delete bag.items[accion.itemId];
+  if (bag.items[action.itemId] === 0) {
+    delete bag.items[action.itemId];
   }
 
   if (item.kind === "cura") {
-    const objetivo = accion.targetIndex === 1 ? rival : player;
-    const maxHp = creatureMaxHp(objetivo.creature);
-    const curado = Math.max(0, Math.min(maxHp - objetivo.creature.currentHp, item.cureAmount ?? 0));
-    objetivo.creature.currentHp += curado;
-    eventos.push({
+    const receiver = action.targetIndex === 1 ? rival : player;
+    const maxHp = creatureMaxHp(receiver.creature);
+    const healed = Math.max(
+      0,
+      Math.min(maxHp - receiver.creature.currentHp, item.cureAmount ?? 0)
+    );
+    receiver.creature.currentHp += healed;
+    events.push({
       kind: "item",
-      text: `${creatureName(objetivo.creature)} recupera ${curado} de PS con ${item.name}.`
+      text: `${creatureName(receiver.creature)} recupera ${healed} de PS con ${item.name}.`
     });
     return;
   }
 
   if (item.kind === "revivir") {
-    const objetivo = accion.targetIndex === 1 ? rival : player;
-    objetivo.creature.currentHp = Math.max(1, Math.floor(creatureMaxHp(objetivo.creature) * (item.reviveRatio ?? 0.5)));
-    objetivo.creature.status = undefined;
-    eventos.push({
+    const receiver = action.targetIndex === 1 ? rival : player;
+    receiver.creature.currentHp = Math.max(
+      1,
+      Math.floor(creatureMaxHp(receiver.creature) * (item.reviveRatio ?? 0.5))
+    );
+    receiver.creature.status = undefined;
+    events.push({
       kind: "item",
-      text: `${item.name} devuelve la vida a ${creatureName(objetivo.creature)}.`
+      text: `${item.name} devuelve la vida a ${creatureName(receiver.creature)}.`
     });
     return;
   }
 
   if (item.kind === "mejora" && item.stage) {
-    const objetivo = accion.targetIndex === 1 ? rival : player;
-    objetivo.creature.stages = applyStages(objetivo.creature.stages, {
+    const receiver = action.targetIndex === 1 ? rival : player;
+    receiver.creature.stages = applyStages(receiver.creature.stages, {
       [item.stage]: item.stages ?? 1
     });
-    eventos.push({
+    events.push({
       kind: "item",
-      text: `${creatureName(objetivo.creature)} sube su ${item.stage} durante la batalla.`
+      text: `${creatureName(receiver.creature)} sube su ${item.stage} durante la batalla.`
     });
     return;
   }
 
   if (item.kind === "restaurar") {
-    const objetivo = accion.targetIndex === 1 ? rival : player;
-    objetivo.creature = restorePP(objetivo.creature);
-    eventos.push({
+    const receiver = action.targetIndex === 1 ? rival : player;
+    receiver.creature = restorePP(receiver.creature);
+    events.push({
       kind: "item",
-      text: `${creatureName(objetivo.creature)} recupera los PS de sus movimientos.`
+      text: `${creatureName(receiver.creature)} recupera los PS de sus movimientos.`
     });
     return;
   }
 
   if (item.kind === "vinculo") {
     player.bondBonus += item.bondBonus ?? 0.2;
-    eventos.push({
+    events.push({
       kind: "item",
       text: `${item.name} refuerza tu próximo vínculo.`
     });
   }
 }
 
-function cloneCombatant(combatiente: Combatant): Combatant {
+function cloneCombatant(combatant: Combatant): Combatant {
   return {
-    ...combatiente,
+    ...combatant,
     creature: {
-      ...combatiente.creature,
-      moves: [...combatiente.creature.moves],
-      pp: [...combatiente.creature.pp],
-      stages: { ...combatiente.creature.stages }
+      ...combatant.creature,
+      moves: [...combatant.creature.moves],
+      pp: [...combatant.creature.pp],
+      stages: { ...combatant.creature.stages }
     },
-    moves: [...combatiente.moves]
+    moves: [...combatant.moves]
   };
 }
 
-export function puedeUsarMovimiento(combatiente: Combatant, index: number): boolean {
-  return (combatiente.creature.pp[index] ?? 0) > 0;
+export function canUseMove(combatant: Combatant, index: number): boolean {
+  return (combatant.creature.pp[index] ?? 0) > 0;
 }
 
-export function tienePP(combatiente: Combatant): boolean {
-  return hasPPLeft(combatiente.creature);
+export function hasMovePP(combatant: Combatant): boolean {
+  return hasPPLeft(combatant.creature);
 }
 
 export type { StatusId };

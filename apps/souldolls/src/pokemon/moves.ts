@@ -28,15 +28,15 @@ export type MoveId = (typeof MOVE_IDS)[number];
 
 export type AnyMoveId = MoveId | "esfuerzo";
 
-export type MoveCategory = "especial" | "status" | "fisico";
+export type MoveCategory = "special" | "status" | "physical";
 
 export type StatusId = "confusion" | "dormido" | "paralizado" | "quemadura" | "veneno";
 
 export type MoveEffect =
   | { kind: "confusion"; chance: number }
-  | { kind: "curacion"; ratio: number }
+  | { kind: "heal"; ratio: number }
   | { kind: "status"; status: StatusId }
-  | { kind: "etapas"; cambios: Partial<Record<StageKey, number>>; target: "propio" | "rival" };
+  | { kind: "stages"; cambios: Partial<Record<StageKey, number>>; target: "self" | "foe" };
 
 export type Move = {
   accuracy: number;
@@ -59,7 +59,7 @@ export type Move = {
 export const MOVES: Record<MoveId, Move> = {
   brisero: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Una ráfaga de bruma que desorienta al rival.",
     effect: { kind: "confusion", chance: 0.3 },
@@ -85,7 +85,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   bricaje: {
     accuracy: 100,
-    category: "fisico",
+    category: "physical",
     critStage: 0,
     description: "Un embestida con todo el cuerpo.",
     id: "bricaje",
@@ -100,7 +100,7 @@ export const MOVES: Record<MoveId, Move> = {
     category: "status",
     critStage: 0,
     description: "Una guardia de piedra que refuerza la defensa.",
-    effect: { kind: "etapas", cambios: { def: 1, spd: -1 }, target: "propio" },
+    effect: { kind: "stages", cambios: { def: 1, spd: -1 }, target: "self" },
     id: "guardia",
     name: "Guardia",
     pp: 20,
@@ -110,7 +110,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   chorro: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Un chorro de rocío que cleanse las hojas.",
     id: "chorro",
@@ -125,7 +125,7 @@ export const MOVES: Record<MoveId, Move> = {
     category: "status",
     critStage: 0,
     description: "Recupera la mitad de los PS.",
-    effect: { kind: "curacion", ratio: 0.5 },
+    effect: { kind: "heal", ratio: 0.5 },
     id: "descanso",
     name: "Descanso",
     pp: 10,
@@ -135,7 +135,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   destello: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 1,
     description: "Un fogonazo que ciega al rival.",
     id: "destello",
@@ -160,7 +160,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   fogonazo: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Una ráfaga de chispas que golpea varias veces.",
     id: "fogonazo",
@@ -173,7 +173,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   latigo_bruto: {
     accuracy: 85,
-    category: "fisico",
+    category: "physical",
     critStage: 0,
     description: "Un latigazo brutal que hiere también a quien lo lanza.",
     id: "latigo_bruto",
@@ -186,7 +186,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   latigo_hoja: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Un latigazo de hojas afiladas.",
     id: "latigo_hoja",
@@ -198,7 +198,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   mordisco: {
     accuracy: 95,
-    category: "fisico",
+    category: "physical",
     critStage: 0,
     description: "Un mordisco húmedo y rápido.",
     flinch: 0.2,
@@ -214,7 +214,7 @@ export const MOVES: Record<MoveId, Move> = {
     category: "status",
     critStage: 0,
     description: "Levanta un muro de roca y afianza la defensa.",
-    effect: { kind: "etapas", cambios: { def: 2, atk: -1 }, target: "propio" },
+    effect: { kind: "stages", cambios: { def: 2, atk: -1 }, target: "self" },
     id: "muro_piedra",
     name: "Muro de piedra",
     pp: 15,
@@ -227,7 +227,7 @@ export const MOVES: Record<MoveId, Move> = {
     category: "status",
     critStage: 0,
     description: "Una nube baja que nubla los ojos del rival.",
-    effect: { kind: "etapas", cambios: { acc: -1 }, target: "rival" },
+    effect: { kind: "stages", cambios: { acc: -1 }, target: "foe" },
     id: "niebla",
     name: "Niebla",
     pp: 20,
@@ -250,7 +250,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   rocazo: {
     accuracy: 90,
-    category: "fisico",
+    category: "physical",
     critStage: 0,
     description: "Una piedra lanzada con fuerza.",
     id: "rocazo",
@@ -262,7 +262,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   sombra_fin: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "La sombra devora la luz del rival.",
     id: "sombra_fin",
@@ -274,7 +274,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   torrente: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Una torrentera que roba la vida del rival.",
     drain: 0.5,
@@ -287,7 +287,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   toxina: {
     accuracy: 100,
-    category: "especial",
+    category: "special",
     critStage: 0,
     description: "Un canto tóxico que deja la piel en llamas.",
     effect: { kind: "status", status: "quemadura" },
@@ -300,7 +300,7 @@ export const MOVES: Record<MoveId, Move> = {
   },
   zarpazo: {
     accuracy: 100,
-    category: "fisico",
+    category: "physical",
     critStage: 0,
     description: "Un zarpazo que hace dudar al rival.",
     flinch: 0.3,
