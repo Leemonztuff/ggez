@@ -33,16 +33,10 @@ import {
   createSouldollsRuntimeScene,
   SANCTUARIES,
   SOULDOLLS_ENTITY_IDS,
-  WILD_CREATURES,
-  type WildDefinition
+  WILD_CREATURES
 } from "./scene/souldolls-scene";
 import { BattleUI, type BattleUiAction } from "./pokemon/battle-ui";
-import {
-  iniciarBatalla,
-  resolverTurno,
-  type BattleLogEntry,
-  type BattleState
-} from "./pokemon/battle";
+import { resolveTurn, startBattle, type BattleLogEntry, type BattleState } from "./pokemon/battle";
 import {
   creatureName,
   createCreature,
@@ -63,8 +57,8 @@ import {
 import { getSpecies } from "./pokemon/species";
 import { WorldClock, WeatherCycle } from "./world/clock";
 import { encounterChancePerSecond, rollEncounter } from "./world/encounters";
-import { lightingFor, type Lighting } from "./world/lighting";
-import { zoneAt, type Zone } from "./world/zones";
+import { lightingFor } from "./world/lighting";
+import { zoneAt, type Weather, type Zone } from "./world/zones";
 
 const WALK_SPEED = 4.4;
 const PLAYER_RADIUS = 0.4;
@@ -209,10 +203,10 @@ export async function createSouldollsGame(root: HTMLElement) {
         return;
       }
 
-      const wild = wilds.get(targetId);
+      const wild = WILD_CREATURES.find((item) => item.entityId === targetId);
       if (wild) {
-        startBattle({
-          creature: createCreature(wild.definition.speciesId, wild.definition.level),
+        beginEncounter({
+          creature: createCreature(wild.speciesId, wild.level),
           entityId: targetId
         });
       }
@@ -313,7 +307,7 @@ export async function createSouldollsGame(root: HTMLElement) {
     );
   }
 
-  function startBattle(input: { creature: Creature; entityId?: string }) {
+  function beginEncounter(input: { creature: Creature; entityId?: string }) {
     if (battle) return;
 
     const leader = partyLeader(party);
@@ -323,27 +317,27 @@ export async function createSouldollsGame(root: HTMLElement) {
       return;
     }
 
-    const state = iniciarBatalla(
+    const state = startBattle(
       {
         bondBonus: 0,
+        bonds: party.vinculos,
         creature: { ...leader },
         flinched: false,
         isPlayer: true,
-        moves: [...leader.moves],
-        vinculos: party.vinculos
+        moves: [...leader.moves]
       },
       {
         bondBonus: 0,
+        bonds: 0,
         creature: input.creature,
         flinched: false,
         isPlayer: false,
-        moves: [...input.creature.moves],
-        vinculos: 0
+        moves: [...input.creature.moves]
       },
       party.bag
     );
 
-    state.modificadores = weatherModifiers(weather.weather);
+    state.modifiers = weatherModifiers(weather.weather);
 
     battle = { activeIndex: 0, entityId: input.entityId, rival: input.creature, state };
     battleUi.clearLog();
@@ -356,9 +350,9 @@ export async function createSouldollsGame(root: HTMLElement) {
   }
 
   function submitBattleAction(action: BattleUiAction) {
-    if (!battle || battle.state.fase === "fin") return;
+    if (!battle || battle.state.phase === "over") return;
 
-    if (action.kind === "cambiar") {
+    if (action.kind === "switch") {
       const next = party.creatures[action.index];
       if (!next || action.index === battle.activeIndex) return;
       party.creatures[battle.activeIndex] = battle.state.player.creature;
@@ -370,18 +364,18 @@ export async function createSouldollsGame(root: HTMLElement) {
     }
 
     const engineAction =
-      action.kind === "cambiar"
-        ? { kind: "cambiar" as const, creature: party.creatures[action.index] }
+      action.kind === "switch"
+        ? { kind: "switch" as const, creature: party.creatures[action.index] }
         : action;
 
-    const resolution = resolverTurno(battle.state, engineAction, Math.random);
+    const resolution = resolveTurn(battle.state, engineAction, Math.random);
     battle.state = resolution.state;
-    party.vinculos = battle.state.player.vinculos;
+    party.vinculos = battle.state.player.bonds;
     battleUi.setLocked(true);
     battleUi.render(battle.state, party, battle.activeIndex);
     playEvents(resolution.events, () => {
       if (!battle) return;
-      if (battle.state.fase === "fin") {
+      if (battle.state.phase === "over") {
         finishBattle();
       } else {
         battleUi.setLocked(false);
@@ -407,9 +401,9 @@ export async function createSouldollsGame(root: HTMLElement) {
     battle = undefined;
 
     party.creatures[finished.activeIndex] = finished.state.player.creature;
-    party.vinculos = finished.state.player.vinculos;
+    party.vinculos = finished.state.player.bonds;
 
-    if (finished.state.result === "captura") {
+    if (finished.state.result === "captured") {
       const captured = finished.rival;
       const added = addToParty(party, captured);
       releaseWorldWild(finished.entityId);
@@ -419,7 +413,7 @@ export async function createSouldollsGame(root: HTMLElement) {
       } else {
         ui.showToast("Tu colección está llena: el alma vuelve al claro");
       }
-    } else if (finished.state.result === "victoria") {
+    } else if (finished.state.result === "victory") {
       const leader = party.creatures[finished.activeIndex];
       const reward = xpReward(leader, finished.rival);
       const result = gainXp(leader, reward);
@@ -440,7 +434,7 @@ export async function createSouldollsGame(root: HTMLElement) {
       party.vinculos += 2;
       releaseWorldWild(finished.entityId);
       healPartyFully(party);
-    } else if (finished.state.result === "derrota") {
+    } else if (finished.state.result === "defeat") {
       healPartyFully(party);
       playerPosition.x = 0;
       playerPosition.z = 13.2;
@@ -573,11 +567,11 @@ export async function createSouldollsGame(root: HTMLElement) {
       return;
     }
 
-    startBattle({ creature: createCreature(encounter.speciesId, encounter.level) });
+    beginEncounter({ creature: createCreature(encounter.speciesId, encounter.level) });
   }
 
   function applyLighting() {
-    const lighting = lightingFor(worldClock.hour, weather.weather);
+    const lighting = lightingFor(worldClock.currentHour, weather.weather);
     const key = `${lighting.sunColor}|${lighting.sunIntensity}|${lighting.background}|${weather.weather}`;
 
     if (key === lightingKey) {

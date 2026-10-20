@@ -9,6 +9,10 @@ export class WorldClock {
     this.hour = (this.hour + deltaSeconds / SECONDS_PER_GAME_HOUR) % 24;
   }
 
+  get currentHour(): number {
+    return this.hour;
+  }
+
   get phase(): DayPhase {
     return phaseForHour(this.hour);
   }

@@ -1,9 +1,11 @@
+import type { Weather } from "./world/zones";
+
 export type ActorTarget = {
   description?: string;
   entityId: string;
   name: string;
   soulId?: string;
-  type: "keeper" | "wild";
+  type: "keeper" | "santuario" | "wild";
 };
 
 export type HudState = {
@@ -12,4 +14,7 @@ export type HudState = {
   nearbyName?: string;
   nearbyType?: ActorTarget["type"];
   partySize: number;
+  timeLabel: string;
+  weather: Weather;
+  zoneName: string;
 };
