@@ -35,7 +35,10 @@
     "typecheck:three-runtime": "bun run --cwd apps/three-runtime-playground typecheck",
     "dev:three-vanilla": "bun run --cwd apps/three-vanilla-playground dev",
     "build:three-vanilla": "bun run --cwd apps/three-vanilla-playground build",
-    "typecheck:three-vanilla": "bun run --cwd apps/three-vanilla-playground typecheck"
+    "typecheck:three-vanilla": "bun run --cwd apps/three-vanilla-playground typecheck",
+    "dev:souldolls": "bun run --cwd apps/souldolls dev",
+    "build:souldolls": "bun run --cwd apps/souldolls build",
+    "typecheck:souldolls": "bun run --cwd apps/souldolls typecheck"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",

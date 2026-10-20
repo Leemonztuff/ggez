@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "types": ["vite/client"],
+    "paths": {
+      "@ggez/gameplay-runtime": ["packages/gameplay-runtime/src/index.ts"],
+      "@ggez/runtime-format": ["packages/runtime-format/src/index.ts"],
+      "@ggez/shared": ["packages/shared/src/index.ts"],
+      "@ggez/three-runtime/loader": ["packages/three-runtime/src/loader/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

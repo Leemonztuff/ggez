@@ -32,6 +32,7 @@ const cliEntries = {};
 const indexEntry = resolveEntry("src/index.ts", "src/index.js");
 const nodeEntry = resolveEntry("src/node.ts", "src/node.js");
 const cliEntry = resolveEntry("src/cli.ts", "src/cli.js");
+const loaderEntry = resolveEntry("src/loader/index.ts", "src/loader/index.js");
 
 if (indexEntry) {
   libraryEntries.index = indexEntry;
@@ -39,6 +40,10 @@ if (indexEntry) {
 
 if (nodeEntry) {
   libraryEntries.node = nodeEntry;
+}
+
+if (loaderEntry) {
+  libraryEntries.loader = loaderEntry;
 }
 
 if (cliEntry) {

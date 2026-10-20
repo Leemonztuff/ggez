@@ -82,6 +82,19 @@ The normal way to run GGEZ locally is through the orchestrator:
 bun run start
 ```
 
+## Souldolls MVP
+
+Run the playable, standalone Three.js game prototype:
+
+```bash
+bun run dev:souldolls
+```
+
+The game source lives in `apps/souldolls`. It is a modular starting point for a
+3D exploration game with 2D billboard characters, dialogue, and collectible
+spirits. See [apps/souldolls/README.md](apps/souldolls/README.md) for controls
+and implementation notes.
+
 That starts the orchestrator in `apps/orchestrator`. From there you can:
 
 - Open the world editor

@@ -5,10 +5,8 @@ import {
   Texture,
   TextureLoader
 } from "three";
-import { applyMaterialLayersToNodeMaterial } from "../material-blend-node";
 import { applyMaterialLayersToStandardMaterial } from "../material-blend";
 import { applyTextureVariationToStandardMaterial } from "../material-texture-variation";
-import { applyTextureVariationToNodeMaterial } from "../material-texture-variation-node";
 import type { WebHammerExportMaterial, WebHammerExportPrimitive } from "../types";
 import type { WebHammerSceneObjectFactoryOptions, WebHammerSceneObjectFactoryResources, TextureSlot } from "./types";
 import { resolveMaterialSide } from "./scene-utils";
@@ -151,6 +149,11 @@ export async function createThreeMaterial(
     : undefined;
 
   if (useNodeMaterial) {
+    const [{ applyMaterialLayersToNodeMaterial }, { applyTextureVariationToNodeMaterial }] = await Promise.all([
+      import("../material-blend-node"),
+      import("../material-texture-variation-node")
+    ]);
+
     applyTextureVariationToNodeMaterial(material as any, materialSpec.textureVariation);
     applyMaterialLayersToNodeMaterial(material as any, resolvedBlendLayers);
   } else {

@@ -1,0 +1,26 @@
+{
+  "name": "@ggez/souldolls",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ggez/gameplay-runtime": "workspace:*",
+    "@ggez/runtime-format": "workspace:*",
+    "@ggez/shared": "workspace:*",
+    "@ggez/three-runtime": "workspace:*",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.181.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

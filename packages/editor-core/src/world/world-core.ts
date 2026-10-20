@@ -664,27 +664,27 @@ export function createWorldEditorCore(
           ? sourceDocument.layers.values()
           : sourceDocument.layers;
 
-        nodes.push(...documentCache.nodes.resolve(documentNodes, flattenContext));
-        entities.push(...documentCache.entities.resolve(documentEntities, flattenContext));
-        documentCache.materials.resolve(documentMaterials, flattenContext).forEach((material) => {
+        nodes.push(...documentCache.nodes.resolve(documentNodes as Iterable<GeometryNode>, flattenContext));
+        entities.push(...documentCache.entities.resolve(documentEntities as Iterable<Entity>, flattenContext));
+        documentCache.materials.resolve(documentMaterials as Iterable<Material>, flattenContext).forEach((material) => {
           if (!seenMaterialIds.has(material.id)) {
             seenMaterialIds.add(material.id);
             materials.push(material);
           }
         });
-        documentCache.textures.resolve(documentTextures, flattenContext).forEach((texture) => {
+        documentCache.textures.resolve(documentTextures as Iterable<TextureRecord>, flattenContext).forEach((texture) => {
           if (!seenTextureIds.has(texture.id)) {
             seenTextureIds.add(texture.id);
             textures.push(texture);
           }
         });
-        documentCache.assets.resolve(documentAssets, flattenContext).forEach((asset) => {
+        documentCache.assets.resolve(documentAssets as Iterable<Asset>, flattenContext).forEach((asset) => {
           if (!seenAssetIds.has(asset.id)) {
             seenAssetIds.add(asset.id);
             assets.push(asset);
           }
         });
-        documentCache.layers.resolve(documentLayers, flattenContext).forEach((layer) => {
+        documentCache.layers.resolve(documentLayers as Iterable<SceneDocumentSnapshot["layers"][number]>, flattenContext).forEach((layer) => {
           if (!seenLayerIds.has(layer.id)) {
             seenLayerIds.add(layer.id);
             layers.push(layer);
@@ -1248,7 +1248,7 @@ export function createSceneEditorAdapter(world: WorldEditorCore): SceneEditorAda
             cached.signature === signature &&
             haveSameReferences(cached.refs, refs)
               ? cached.snapshot
-              : structuredClone(value);
+              : (structuredClone(value) as unknown as TSnapshot);
 
           snapshots.push(snapshot);
           nextCache.set(value.id, {
