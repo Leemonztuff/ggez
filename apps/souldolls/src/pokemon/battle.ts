@@ -280,7 +280,7 @@ export function chooseRivalMove(
   for (const candidate of available) {
     const move = MOVES[candidate.moveId];
     const score =
-      move.category === "estado"
+      move.category === "status"
         ? 0
         : computeDamage(rival.creature, target.creature, move, () => 0.99).damage *
           typeEffectiveness(move.type, getSpecies(target.creature.speciesId).types);
@@ -363,7 +363,7 @@ function executeMove(
     return;
   }
 
-  if (move.category === "estado") {
+  if (move.category === "status") {
     applyEffect(actor, target, move, rng, events);
     return;
   }
@@ -474,7 +474,7 @@ function applyEffect(
 
   if (!effect) return;
 
-  if (effect.kind === "curacion") {
+  if (effect.kind === "heal") {
     const maxHp = creatureMaxHp(actor.creature);
     const healed = Math.max(0, Math.round(maxHp * effect.ratio));
     actor.creature.currentHp = Math.min(maxHp, actor.creature.currentHp + healed);
@@ -485,7 +485,7 @@ function applyEffect(
     return;
   }
 
-  if (effect.kind === "etapas") {
+  if (effect.kind === "stages") {
     const receiver = effect.target === "self" ? actor : target;
     receiver.creature.stages = applyStages(receiver.creature.stages, effect.cambios);
     const summary = Object.entries(effect.cambios)
